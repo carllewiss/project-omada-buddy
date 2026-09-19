@@ -24,16 +24,16 @@ const packages: Package[] = [
 ];
 
 interface OmadaParams {
-  clientMac?: string;
-  clientIp?: string;
-  apMac?: string;
-  ssid?: string;
+  clientMac?: string | undefined;
+  clientIp?: string | undefined;
+  apMac?: string | undefined;
+  ssid?: string | undefined;
 }
 
 const Index = () => {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [voucherCode, setVoucherCode] = useState("");
-  const [selectedPackage, setSelectedPackage] = useState<Package>(packages[0]);
+  const [selectedPackage, setSelectedPackage] = useState<Package>(packages[0]!);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [paymentStatus, setPaymentStatus] = useState<"idle" | "processing" | "success" | "failed">("idle");
   const [authorizationData, setAuthorizationData] = useState<any>(null);
@@ -64,8 +64,8 @@ const Index = () => {
           .order('created_at', { ascending: false })
           .limit(1);
 
-        if (data && data.length > 0) {
-          const record = data[0];
+        const record = data?.[0];
+        if (record) {
           const createdAt = new Date(record.created_at).getTime();
           const expiresAt = createdAt + record.duration_hours * 60 * 60 * 1000;
           if (Date.now() < expiresAt) {
