@@ -1,0 +1,34 @@
+project_id = "tyqcalkdvsmeczbbqfns"
+
+[functions.mpesa-callback]
+verify_jwt = false
+
+[functions.mpesa-reconcile]
+verify_jwt = false
+
+[functions.portal-mpesa-initiate]
+verify_jwt = false
+
+[functions.portal-mpesa-poll]
+verify_jwt = false
+
+[functions.portal-redeem-voucher]
+verify_jwt = false
+
+[functions.mpesa-stk-query]
+verify_jwt = false
+
+[functions.portal-resume-session]
+verify_jwt = false
+
+[functions.portal-swap-voucher]
+verify_jwt = false
+
+[functions.pending-authorizations]
+verify_jwt = false
+
+[functions.update-authorization]
+verify_jwt = false
+
+[functions.mpesa-status]
+verify_jwt = false
