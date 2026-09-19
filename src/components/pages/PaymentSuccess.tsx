@@ -16,8 +16,9 @@ const PaymentSuccess = () => {
     const transactionId = searchParams.get('transaction_id');
     const sessionId = searchParams.get('session_id');
     
-    if (transactionId || sessionId) {
-      fetchVoucherData(transactionId || sessionId);
+    const id = transactionId || sessionId;
+    if (id) {
+      fetchVoucherData(id);
     } else {
       setLoading(false);
     }
