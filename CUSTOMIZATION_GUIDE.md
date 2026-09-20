@@ -31,10 +31,10 @@ Use these to connect from your local Node.js agent or any external tool:
 
 | Key | Value |
 |---|---|
-| **Supabase URL** | `https://tyqcalkdvsmeczbbqfns.supabase.co` |
-| **Anon Key** | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR5cWNhbGtkdnNtZWN6YmJxZm5zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3NDUxNTYsImV4cCI6MjA4NjMyMTE1Nn0.VTgZPClT7Te2R-9Y6zvtVyDj6pVWRvX7svvvLSx3fcw` |
-| **REST API** | `https://tyqcalkdvsmeczbbqfns.supabase.co/rest/v1/` |
-| **Edge Functions** | `https://tyqcalkdvsmeczbbqfns.supabase.co/functions/v1/` |
+| **Supabase URL** | `https://wfvzkkcpzrfmofurlftc.supabase.co` |
+| **Anon Key** | `sb_publishable_RzKJZNMwP-WOzUvypgjYgw_K23TU6kA` |
+| **REST API** | `https://wfvzkkcpzrfmofurlftc.supabase.co/rest/v1/` |
+| **Edge Functions** | `https://wfvzkkcpzrfmofurlftc.supabase.co/functions/v1/` |
 
 ---
 
@@ -88,7 +88,7 @@ https://omada-mpesa-voucher-flow.lovable.app/?clientMac=<clientMac>&clientIp=<cl
    ```javascript
    const CONFIG = {
      // These are pre-filled — no changes needed:
-     SUPABASE_URL: 'https://tyqcalkdvsmeczbbqfns.supabase.co',
+     SUPABASE_URL: 'https://wfvzkkcpzrfmofurlftc.supabase.co',
      SUPABASE_ANON_KEY: '...already filled...',
 
      // Web-login (used to authorize client MACs):
@@ -278,8 +278,8 @@ If a client gets disconnected before their paid time expires, the system **autom
 
 Use the REST API to insert vouchers:
 ```bash
-curl -X POST "https://tyqcalkdvsmeczbbqfns.supabase.co/rest/v1/vouchers" \
-  -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR5cWNhbGtkdnNtZWN6YmJxZm5zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3NDUxNTYsImV4cCI6MjA4NjMyMTE1Nn0.VTgZPClT7Te2R-9Y6zvtVyDj6pVWRvX7svvvLSx3fcw" \
+curl -X POST "https://wfvzkkcpzrfmofurlftc.supabase.co/rest/v1/vouchers" \
+  -H "apikey: sb_publishable_RzKJZNMwP-WOzUvypgjYgw_K23TU6kA" \
   -H "Content-Type: application/json" \
   -d '{"code": "WIFI-1234", "package_type": "2hour", "duration_hours": 2}'
 ```
@@ -303,7 +303,7 @@ curl -X POST "https://tyqcalkdvsmeczbbqfns.supabase.co/rest/v1/vouchers" \
 
 ### Fetch pending clients
 ```
-GET https://tyqcalkdvsmeczbbqfns.supabase.co/functions/v1/pending-authorizations
+GET https://wfvzkkcpzrfmofurlftc.supabase.co/functions/v1/pending-authorizations
 Headers: apikey: <anon-key>
 
 Response: { "clients": [{ "id", "mac_address", "duration_hours", ... }] }
@@ -311,7 +311,7 @@ Response: { "clients": [{ "id", "mac_address", "duration_hours", ... }] }
 
 ### Mark client authorized
 ```
-POST https://tyqcalkdvsmeczbbqfns.supabase.co/functions/v1/update-authorization
+POST https://wfvzkkcpzrfmofurlftc.supabase.co/functions/v1/update-authorization
 Headers: apikey: <anon-key>, Content-Type: application/json
 Body: { "id": "uuid-of-record" }
 
@@ -320,7 +320,7 @@ Response: { "success": true }
 
 ### Query transactions (REST API)
 ```
-GET https://tyqcalkdvsmeczbbqfns.supabase.co/rest/v1/transactions?status=eq.success&order=created_at.desc
+GET https://wfvzkkcpzrfmofurlftc.supabase.co/rest/v1/transactions?status=eq.success&order=created_at.desc
 Headers: apikey: <anon-key>
 ```
 
