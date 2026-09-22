@@ -1,4 +1,5 @@
-// Portal: Poll payment status; on confirmed payment, atomically claim a voucher and return it.
+// Portal: Poll payment status; on confirmed payment, issue a voucher whose
+// online time matches the package purchased, and return it.
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.3';
 
 const corsHeaders = {
@@ -22,11 +23,75 @@ async function mintResumeToken(): Promise<{ token: string; hash: string }> {
   return { token, hash };
 }
 
+// ---- Omada Open API: mint a voucher whose online time == the package paid for ----
+const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
+const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
+const SITE_ID = Deno.env.get('OMADA_SITE_ID') ?? '';
+const OMADA_CLIENT_ID = Deno.env.get('OMADA_CLIENT_ID') ?? '';
+const OMADA_CLIENT_SECRET = Deno.env.get('OMADA_CLIENT_SECRET') ?? '';
+
+async function mintOmadaVoucher(
+  durationHours: number,
+  label: string,
+  priceKes: number,
+): Promise<{ code: string; groupId: string } | null> {
+  if (!OMADA_URL || !OMADAC_ID || !SITE_ID || !OMADA_CLIENT_ID || !OMADA_CLIENT_SECRET) return null;
+  try {
+    const tokRes = await fetch(`${OMADA_URL}/openapi/authorize/token?grant_type=client_credentials`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        omadacId: OMADAC_ID,
+        client_id: OMADA_CLIENT_ID,
+        client_secret: OMADA_CLIENT_SECRET,
+      }),
+    });
+    const tok = await tokRes.json();
+    if (tok?.errorCode !== 0) throw new Error(tok?.msg || 'token failed');
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `AccessToken=${tok.result.accessToken}`,
+    };
+    const base = `${OMADA_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/voucher-groups`;
+    const cRes = await fetch(base, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        name: label.slice(0, 60),
+        amount: 1,
+        codeLength: 8,
+        codeForm: [0],
+        limitType: 0,     // limited number of users
+        limitNum: 1,      // one device
+        durationType: 0,  // countdown of online time
+        duration: Math.round(durationHours * 60), // minutes
+        timingType: 0,
+        rateLimit: { mode: 0, customRateLimit: { downLimitEnable: false, upLimitEnable: false } },
+        trafficLimitEnable: false,
+        trafficLimitFrequency: 0,
+        unitPrice: Math.max(1, Math.round(priceKes)),
+        currency: 'AUD',
+        applyToAllPortals: true,
+        validityType: 0,
+        logout: true,
+        description: label,
+      }),
+    });
+    const created = await cRes.json();
+    if (created?.errorCode !== 0) throw new Error(created?.msg || 'create failed');
+    const groupId = created.result.id as string;
+    const lRes = await fetch(`${base}/${groupId}?page=1&pageSize=1`, { headers });
+    const list = await lRes.json();
+    const code = list?.result?.data?.[0]?.code as string | undefined;
+    if (!code) throw new Error('no code returned');
+    return { code, groupId };
+  } catch (e) {
+    console.error('[omada] voucher mint failed', e);
+    return null;
+  }
+}
 
 // ---- Anti-sharing gate (server-side) ----
-// The reveal card is only permitted when:
-//   a) payment was confirmed within the last 6 minutes, AND
-//   b) the voucher shows no sharing abuse (< 3 distinct MACs seen for it).
 const REVEAL_WINDOW_MS = 6 * 60 * 1000;
 async function revealAllowedFor(supabase: any, code: string, paidAtIso: string | null): Promise<boolean> {
   if (!code || !paidAtIso) return false;
@@ -94,8 +159,6 @@ Deno.serve(async (req) => {
     if (tx.status === 'success' || tx.status === 'paid') {
       const paidAtIso = tx.updated_at || tx.created_at || new Date().toISOString();
 
-      // The voucher is normally issued server-side the moment payment is confirmed
-      // (mpesa-callback / stk-query / reconcile). Claim here only as a last resort.
       let code: string | null = tx.voucher_code || null;
       let durationHours: number | null = null;
       let packageType: string | null = tx.package_type || null;
@@ -113,6 +176,61 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Preferred path: create the voucher on the Omada controller on demand,
+      // limited to one device and to the online time of the package purchased.
+      if (!code) {
+        const { data: pkg } = await supabase
+          .from('package_pricing')
+          .select('duration_hours, price_kes')
+          .eq('package_type', tx.package_type)
+          .maybeSingle();
+        const hours = Number(pkg?.duration_hours ?? (tx.package_type === '24hour' ? 24 : 2));
+        const minted = await mintOmadaVoucher(
+          hours,
+          `MPESA ${tx.package_type} ${checkoutRequestId}`,
+          Number(pkg?.price_kes ?? tx.amount ?? 10),
+        );
+        if (minted) {
+          code = minted.code;
+          durationHours = hours;
+          packageType = tx.package_type;
+
+          await supabase.from('vouchers').insert({
+            code: minted.code,
+            package_type: tx.package_type,
+            duration_hours: hours,
+            status: 'used',
+            used_at: new Date().toISOString(),
+            used_by_mac: clientMac || null,
+            transaction_id: tx.id,
+          });
+
+          await supabase
+            .from('client_authorizations')
+            .update({
+              payment_status: 'paid',
+              mpesa_receipt: `VC-${minted.code}`,
+              mac_address: clientMac || null,
+              duration_hours: hours,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('checkout_request_id', checkoutRequestId);
+
+          supabase.from('session_events').insert({
+            event_type: 'voucher_issued',
+            voucher_code: minted.code,
+            package_type: tx.package_type,
+            duration_hours: hours,
+            transaction_id: tx.id,
+            checkout_request_id: checkoutRequestId,
+            client_mac: clientMac || null,
+            outcome: 'issued',
+            details: { source: 'omada_open_api', groupId: minted.groupId },
+          }).then(() => {}, () => {});
+        }
+      }
+
+      // Fallback: pre-stocked voucher pool in the database.
       if (!code) {
         const { data: claimed, error: claimErr } = await supabase
           .rpc('claim_voucher_for_transaction', {
