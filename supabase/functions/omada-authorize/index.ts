@@ -1,110 +1,134 @@
-// Server-side Omada authorization — used as a BACKUP when the browser's
-// voucher auto-submit to /portal/auth fails.
+// Omada Open API — issue a single-use voucher whose online time matches the
+// package the customer paid for, and (optionally) log the event.
 //
-// Flow (Omada v5/v6 Web API):
-//   1. GET  /api/info                          -> omadacId
-//   2. POST /{cid}/api/v2/login                -> token + session cookie
-//   3. POST /{cid}/api/v2/hotspot/extPortal/auth
-import { corsHeaders } from 'npm:@supabase/supabase-js@2/cors';
-import { createClient } from 'npm:@supabase/supabase-js@2';
+// POST { packageType?: "2hour" | "24hour", durationHours?: number, clientMac?: string }
+//  ->  { success: true, code, durationHours, packageType, groupId }
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.95.3';
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+};
 
 const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
-const OMADA_USERNAME = Deno.env.get('OMADA_USERNAME') ?? '';
-const OMADA_PASSWORD = Deno.env.get('OMADA_PASSWORD') ?? '';
-const OMADA_SITE = Deno.env.get('OMADA_SITE') ?? 'Default';
+const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
+const SITE_ID = Deno.env.get('OMADA_SITE_ID') ?? '';
+const CLIENT_ID = Deno.env.get('OMADA_CLIENT_ID') ?? '';
+const CLIENT_SECRET = Deno.env.get('OMADA_CLIENT_SECRET') ?? '';
 
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
+const json = (b: unknown, status = 200) =>
+  new Response(JSON.stringify(b), {
     status,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
-async function logEvent(type: string, payload: Record<string, unknown>) {
-  try {
-    const sb = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-    );
-    await sb.from('session_events').insert({
-      event_type: type,
-      client_mac: (payload.clientMac as string) ?? null,
-      details: payload,
-    });
-  } catch (_) { /* logging must never break auth */ }
+async function accessToken(): Promise<string> {
+  const res = await fetch(`${OMADA_URL}/openapi/authorize/token?grant_type=client_credentials`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      omadacId: OMADAC_ID,
+      client_id: CLIENT_ID,
+      client_secret: CLIENT_SECRET,
+    }),
+  });
+  const data = await res.json();
+  if (data?.errorCode !== 0) throw new Error(data?.msg || 'Omada token request failed');
+  return data.result.accessToken as string;
+}
+
+/** 1 code, 1 device, `durationHours` of online time counted from first login. */
+async function createVoucher(durationHours: number, label: string, priceKes: number) {
+  const token = await accessToken();
+  const base = `${OMADA_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/voucher-groups`;
+  const headers = { 'Content-Type': 'application/json', Authorization: `AccessToken=${token}` };
+
+  const createRes = await fetch(base, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      name: label.slice(0, 60),
+      amount: 1,
+      codeLength: 8,
+      codeForm: [0],
+      limitType: 0,
+      limitNum: 1,
+      durationType: 0,
+      duration: Math.round(durationHours * 60),
+      timingType: 0,
+      rateLimit: { mode: 0, customRateLimit: { downLimitEnable: false, upLimitEnable: false } },
+      trafficLimitEnable: false,
+      trafficLimitFrequency: 0,
+      unitPrice: Math.max(1, Math.round(priceKes)),
+      currency: 'AUD',
+      applyToAllPortals: true,
+      validityType: 0,
+      logout: true,
+      description: label,
+    }),
+  });
+  const created = await createRes.json();
+  if (created?.errorCode !== 0) throw new Error(created?.msg || 'Voucher creation failed');
+  const groupId = created.result.id as string;
+
+  const listRes = await fetch(`${base}/${groupId}?page=1&pageSize=1`, { headers });
+  const list = await listRes.json();
+  const code = list?.result?.data?.[0]?.code as string | undefined;
+  if (!code) throw new Error('Voucher created but no code returned');
+  return { code, groupId };
 }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-  if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
-
-  if (!OMADA_URL || !OMADA_USERNAME || !OMADA_PASSWORD) {
-    return json({ authorized: false, error: 'Controller not configured' }, 500);
-  }
-
-  let body: Record<string, unknown>;
-  try { body = await req.json(); } catch { return json({ error: 'Invalid JSON' }, 400); }
-
-  const clientMac = String(body.clientMac ?? '').trim();
-  const apMac = String(body.apMac ?? '').trim();
-  const ssidName = String(body.ssidName ?? '').trim();
-  const radioId = Number(body.radioId ?? 0);
-  const durationHours = Number(body.durationHours ?? 2);
-
-  if (!/^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/.test(clientMac)) {
-    return json({ authorized: false, error: 'Invalid clientMac' }, 400);
-  }
-  if (!(durationHours > 0 && durationHours <= 720)) {
-    return json({ authorized: false, error: 'Invalid duration' }, 400);
+  if (!OMADA_URL || !OMADAC_ID || !SITE_ID || !CLIENT_ID || !CLIENT_SECRET) {
+    return json({ success: false, error: 'Controller not configured' }, 500);
   }
 
   try {
-    // 1. Controller id
-    const infoRes = await fetch(`${OMADA_URL}/api/info`);
-    const info = await infoRes.json();
-    const cid = info?.result?.omadacId;
-    if (!cid) throw new Error('Could not read controller id');
+    const body = await req.json().catch(() => ({} as Record<string, unknown>));
+    const packageType = String(body.packageType ?? '2hour');
+    const clientMac = body.clientMac ? String(body.clientMac) : null;
+    let durationHours = Number(body.durationHours ?? 0);
+    let price = 10;
 
-    // 2. Login
-    const loginRes = await fetch(`${OMADA_URL}/${cid}/api/v2/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: OMADA_USERNAME, password: OMADA_PASSWORD }),
-    });
-    const login = await loginRes.json();
-    if (login?.errorCode !== 0) throw new Error(login?.msg || 'Controller login failed');
-    const token = login.result.token;
-    const cookie = loginRes.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const sb = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
+    );
 
-    // 3. Authorize the client MAC directly
-    const authRes = await fetch(`${OMADA_URL}/${cid}/api/v2/hotspot/extPortal/auth`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Csrf-Token': token,
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
-      body: JSON.stringify({
-        clientMac,
-        apMac: apMac || undefined,
-        ssidName: ssidName || undefined,
-        radioId: Number.isFinite(radioId) ? radioId : 0,
-        site: OMADA_SITE,
-        authType: 4, // external portal authorization
-        time: durationHours * 60 * 60 * 1000,
-      }),
-    });
-    const auth = await authRes.json();
-
-    if (auth?.errorCode === 0) {
-      await logEvent('server_side_auth_success', { clientMac, apMac, ssidName, durationHours });
-      return json({ authorized: true });
+    if (!durationHours) {
+      const { data } = await sb
+        .from('package_pricing')
+        .select('duration_hours, price_kes')
+        .eq('package_type', packageType)
+        .maybeSingle();
+      durationHours = Number(data?.duration_hours ?? 2);
+      price = Number(data?.price_kes ?? 10);
     }
 
-    await logEvent('server_side_auth_failed', { clientMac, error: auth?.msg, code: auth?.errorCode });
-    return json({ authorized: false, error: auth?.msg || 'Controller rejected authorization' }, 200);
+    if (!(durationHours > 0 && durationHours <= 720)) {
+      return json({ success: false, error: 'Invalid duration' }, 400);
+    }
+
+    const { code, groupId } = await createVoucher(
+      durationHours,
+      `MPESA ${packageType} ${new Date().toISOString().slice(0, 16)}`,
+      price,
+    );
+
+    await sb.from('session_events').insert({
+      event_type: 'omada_voucher_created',
+      voucher_code: code,
+      package_type: packageType,
+      duration_hours: durationHours,
+      client_mac: clientMac,
+      outcome: 'issued',
+      details: { groupId, source: 'omada_open_api' },
+    });
+
+    return json({ success: true, code, durationHours, packageType, groupId });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : 'Unknown error';
-    await logEvent('server_side_auth_error', { clientMac, error: msg });
-    return json({ authorized: false, error: msg }, 200);
+    return json({ success: false, error: (e as Error).message }, 200);
   }
 });
