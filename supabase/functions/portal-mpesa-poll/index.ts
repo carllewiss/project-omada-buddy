@@ -167,7 +167,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    const { checkoutRequestId, clientMac } = await req.json();
+    const { checkoutRequestId, clientMac, apMac, ssidName, radioId } = await req.json();
     if (!checkoutRequestId) {
       return new Response(JSON.stringify({ error: 'checkoutRequestId required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
