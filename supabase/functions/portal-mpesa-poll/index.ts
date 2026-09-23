@@ -91,6 +91,50 @@ async function mintOmadaVoucher(
   }
 }
 
+// ---- PRIMARY auth: authorize the paying device's MAC directly on the controller ----
+const OPERATOR_USER = Deno.env.get('OMADA_OPERATOR_USER') ?? '';
+const OPERATOR_PASS = Deno.env.get('OMADA_OPERATOR_PASSWORD') ?? '';
+const normMac = (m: string) => (m || '').trim().toUpperCase().replace(/:/g, '-');
+
+async function authorizeMacDirect(opts: {
+  clientMac: string; apMac: string; ssidName: string; radioId: number; seconds: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!OMADA_URL || !OMADAC_ID || !SITE_ID || !OPERATOR_USER || !OPERATOR_PASS) {
+    return { ok: false, error: 'operator_not_configured' };
+  }
+  try {
+    const loginRes = await fetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: OPERATOR_USER, password: OPERATOR_PASS }),
+    });
+    const login = await loginRes.json().catch(() => ({}));
+    if (login?.errorCode !== 0) return { ok: false, error: login?.msg || 'operator login failed' };
+    const cookie = (loginRes.headers.get('set-cookie') || '')
+      .split(/,(?=[^;]+?=)/).map((c) => c.split(';')[0].trim()).filter(Boolean).join('; ');
+
+    const res = await fetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/extPortal/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Csrf-Token': login.result?.token, Cookie: cookie },
+      body: JSON.stringify({
+        clientMac: normMac(opts.clientMac),
+        apMac: normMac(opts.apMac),
+        ssidName: opts.ssidName,
+        radioId: Number.isFinite(opts.radioId) ? opts.radioId : 0,
+        site: SITE_ID,
+        time: Math.round(opts.seconds * 1000),
+        authType: 4,
+      }),
+      redirect: 'manual',
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data?.errorCode === 0) return { ok: true };
+    return { ok: false, error: data?.msg || `controller responded ${res.status}` };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 // ---- Anti-sharing gate (server-side) ----
 const REVEAL_WINDOW_MS = 6 * 60 * 1000;
 async function revealAllowedFor(supabase: any, code: string, paidAtIso: string | null): Promise<boolean> {
@@ -123,7 +167,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
 
   try {
-    const { checkoutRequestId, clientMac } = await req.json();
+    const { checkoutRequestId, clientMac, apMac, ssidName, radioId } = await req.json();
     if (!checkoutRequestId) {
       return new Response(JSON.stringify({ error: 'checkoutRequestId required' }), {
         status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -158,6 +202,87 @@ Deno.serve(async (req) => {
 
     if (tx.status === 'success' || tx.status === 'paid') {
       const paidAtIso = tx.updated_at || tx.created_at || new Date().toISOString();
+
+      // ---------------- PRIMARY: authorize this MAC on the controller ----------------
+      // The device that paid is allowed online for exactly the package duration.
+      // Only attempted the first time (no voucher / MAC grant recorded yet).
+      if (clientMac && !tx.voucher_code) {
+        const { data: pkg } = await supabase
+          .from('package_pricing')
+          .select('duration_hours')
+          .eq('package_type', tx.package_type)
+          .maybeSingle();
+        const hours = Number(
+          pkg?.duration_hours ?? (tx.package_type === '24hour' ? 24 : tx.package_type === '1week' ? 168 : 2),
+        );
+
+        const granted = await authorizeMacDirect({
+          clientMac,
+          apMac: apMac || tx.ap_mac || '',
+          ssidName: ssidName || tx.ssid || '',
+          radioId: Number(radioId ?? 0),
+          seconds: hours * 3600,
+        });
+
+        if (granted.ok) {
+          const grantCode = `MAC-${String(tx.id).slice(0, 8)}-${Date.now().toString(36).toUpperCase()}`;
+          const { token, hash } = await mintResumeToken();
+
+          await supabase.from('vouchers').insert({
+            code: grantCode,
+            package_type: tx.package_type,
+            duration_hours: hours,
+            status: 'used',
+            used_at: new Date().toISOString(),
+            used_by_mac: clientMac,
+            transaction_id: tx.id,
+            resume_token_hash: hash,
+            resume_token_macs: [clientMac],
+            resume_token_mac_count: 1,
+          });
+
+          await supabase.from('transactions')
+            .update({ voucher_code: grantCode, updated_at: new Date().toISOString() })
+            .eq('id', tx.id);
+
+          await supabase.from('client_authorizations')
+            .update({
+              payment_status: 'paid',
+              authorization_status: 'yes',
+              mac_address: clientMac,
+              duration_hours: hours,
+              mpesa_receipt: `API-${grantCode}`,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('checkout_request_id', checkoutRequestId);
+
+          supabase.from('session_events').insert({
+            event_type: 'mac_authorization',
+            voucher_code: grantCode,
+            package_type: tx.package_type,
+            duration_hours: hours,
+            transaction_id: tx.id,
+            checkout_request_id: checkoutRequestId,
+            client_mac: clientMac,
+            outcome: 'authorized',
+            details: { method: 'ext_portal_auth', seconds: hours * 3600 },
+          }).then(() => {}, () => {});
+
+          return new Response(JSON.stringify({
+            status: 'success',
+            method: 'api',
+            voucher: grantCode,
+            packageType: tx.package_type,
+            durationHours: hours,
+            paidAt: paidAtIso,
+            expiresAt: new Date(Date.now() + hours * 3600 * 1000).toISOString(),
+            revealAllowed: false,
+            resumeToken: token,
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        console.warn('[omada] direct MAC auth unavailable, falling back to voucher:', granted.error);
+      }
 
       let code: string | null = tx.voucher_code || null;
       let durationHours: number | null = null;

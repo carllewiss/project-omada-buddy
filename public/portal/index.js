@@ -36,9 +36,11 @@
   };
 
   const PACKAGES = [
-    { id: '2hour',  name: '2-Hour Package',  duration: '2 Hours',  price: 10 },
-    { id: '24hour', name: '24-Hour Package', duration: '24 Hours', price: 30 },
+    { id: '2hour',  name: '2-Hour Package',  duration: '2 Hours',  price: 10,  hours: 2 },
+    { id: '24hour', name: '24-Hour Package', duration: '24 Hours', price: 30,  hours: 24 },
+    { id: '1week',  name: '1-Week Package',  duration: '7 Days',   price: 150, hours: 168 },
   ];
+  const labelFor = (id) => (PACKAGES.find((p) => p.id === id) || {}).name || 'Internet Access';
   let selected = PACKAGES[0];
   // Tracks the package label used for the connected screen (set when M-Pesa succeeds OR voucher redeems)
   let connectedPackageLabel = '';
