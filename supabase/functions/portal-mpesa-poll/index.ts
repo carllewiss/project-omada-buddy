@@ -203,6 +203,87 @@ Deno.serve(async (req) => {
     if (tx.status === 'success' || tx.status === 'paid') {
       const paidAtIso = tx.updated_at || tx.created_at || new Date().toISOString();
 
+      // ---------------- PRIMARY: authorize this MAC on the controller ----------------
+      // The device that paid is allowed online for exactly the package duration.
+      // Only attempted the first time (no voucher / MAC grant recorded yet).
+      if (clientMac && !tx.voucher_code) {
+        const { data: pkg } = await supabase
+          .from('package_pricing')
+          .select('duration_hours')
+          .eq('package_type', tx.package_type)
+          .maybeSingle();
+        const hours = Number(
+          pkg?.duration_hours ?? (tx.package_type === '24hour' ? 24 : tx.package_type === '1week' ? 168 : 2),
+        );
+
+        const granted = await authorizeMacDirect({
+          clientMac,
+          apMac: apMac || tx.ap_mac || '',
+          ssidName: ssidName || tx.ssid || '',
+          radioId: Number(radioId ?? 0),
+          seconds: hours * 3600,
+        });
+
+        if (granted.ok) {
+          const grantCode = `MAC-${String(tx.id).slice(0, 8)}-${Date.now().toString(36).toUpperCase()}`;
+          const { token, hash } = await mintResumeToken();
+
+          await supabase.from('vouchers').insert({
+            code: grantCode,
+            package_type: tx.package_type,
+            duration_hours: hours,
+            status: 'used',
+            used_at: new Date().toISOString(),
+            used_by_mac: clientMac,
+            transaction_id: tx.id,
+            resume_token_hash: hash,
+            resume_token_macs: [clientMac],
+            resume_token_mac_count: 1,
+          });
+
+          await supabase.from('transactions')
+            .update({ voucher_code: grantCode, updated_at: new Date().toISOString() })
+            .eq('id', tx.id);
+
+          await supabase.from('client_authorizations')
+            .update({
+              payment_status: 'paid',
+              authorization_status: 'yes',
+              mac_address: clientMac,
+              duration_hours: hours,
+              mpesa_receipt: `API-${grantCode}`,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('checkout_request_id', checkoutRequestId);
+
+          supabase.from('session_events').insert({
+            event_type: 'mac_authorization',
+            voucher_code: grantCode,
+            package_type: tx.package_type,
+            duration_hours: hours,
+            transaction_id: tx.id,
+            checkout_request_id: checkoutRequestId,
+            client_mac: clientMac,
+            outcome: 'authorized',
+            details: { method: 'ext_portal_auth', seconds: hours * 3600 },
+          }).then(() => {}, () => {});
+
+          return new Response(JSON.stringify({
+            status: 'success',
+            method: 'api',
+            voucher: grantCode,
+            packageType: tx.package_type,
+            durationHours: hours,
+            paidAt: paidAtIso,
+            expiresAt: new Date(Date.now() + hours * 3600 * 1000).toISOString(),
+            revealAllowed: false,
+            resumeToken: token,
+          }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+        }
+
+        console.warn('[omada] direct MAC auth unavailable, falling back to voucher:', granted.error);
+      }
+
       let code: string | null = tx.voucher_code || null;
       let durationHours: number | null = null;
       let packageType: string | null = tx.package_type || null;
