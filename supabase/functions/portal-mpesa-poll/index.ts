@@ -91,6 +91,50 @@ async function mintOmadaVoucher(
   }
 }
 
+// ---- PRIMARY auth: authorize the paying device's MAC directly on the controller ----
+const OPERATOR_USER = Deno.env.get('OMADA_OPERATOR_USER') ?? '';
+const OPERATOR_PASS = Deno.env.get('OMADA_OPERATOR_PASSWORD') ?? '';
+const normMac = (m: string) => (m || '').trim().toUpperCase().replace(/:/g, '-');
+
+async function authorizeMacDirect(opts: {
+  clientMac: string; apMac: string; ssidName: string; radioId: number; seconds: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  if (!OMADA_URL || !OMADAC_ID || !SITE_ID || !OPERATOR_USER || !OPERATOR_PASS) {
+    return { ok: false, error: 'operator_not_configured' };
+  }
+  try {
+    const loginRes = await fetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: OPERATOR_USER, password: OPERATOR_PASS }),
+    });
+    const login = await loginRes.json().catch(() => ({}));
+    if (login?.errorCode !== 0) return { ok: false, error: login?.msg || 'operator login failed' };
+    const cookie = (loginRes.headers.get('set-cookie') || '')
+      .split(/,(?=[^;]+?=)/).map((c) => c.split(';')[0].trim()).filter(Boolean).join('; ');
+
+    const res = await fetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/extPortal/auth`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Csrf-Token': login.result?.token, Cookie: cookie },
+      body: JSON.stringify({
+        clientMac: normMac(opts.clientMac),
+        apMac: normMac(opts.apMac),
+        ssidName: opts.ssidName,
+        radioId: Number.isFinite(opts.radioId) ? opts.radioId : 0,
+        site: SITE_ID,
+        time: Math.round(opts.seconds * 1000),
+        authType: 4,
+      }),
+      redirect: 'manual',
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data?.errorCode === 0) return { ok: true };
+    return { ok: false, error: data?.msg || `controller responded ${res.status}` };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 // ---- Anti-sharing gate (server-side) ----
 const REVEAL_WINDOW_MS = 6 * 60 * 1000;
 async function revealAllowedFor(supabase: any, code: string, paidAtIso: string | null): Promise<boolean> {
