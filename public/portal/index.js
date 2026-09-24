@@ -365,7 +365,7 @@
         // the transactions row, so the next poll tick picks it up.
         call('mpesa-stk-query', { checkoutRequestId }).catch(() => {});
       }
-      const { ok, data } = await call('portal-mpesa-poll', { checkoutRequestId, clientMac });
+      const { ok, data } = await call('portal-mpesa-poll', { checkoutRequestId, clientMac, apMac, ssidName, radioId: radioId ? Number(radioId) : 0 });
       if (!ok) return;
       if (data.status === 'success') {
         clearInterval(pollInterval); pollInterval = null;
