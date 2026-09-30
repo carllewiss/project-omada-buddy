@@ -74,6 +74,7 @@ export type Database = {
           duration_hours: number
           package_type: string
           price_kes: number
+          speed_mbps: number
           updated_at: string
         }
         Insert: {
@@ -81,6 +82,7 @@ export type Database = {
           duration_hours: number
           package_type: string
           price_kes: number
+          speed_mbps?: number
           updated_at?: string
         }
         Update: {
@@ -88,6 +90,7 @@ export type Database = {
           duration_hours?: number
           package_type?: string
           price_kes?: number
+          speed_mbps?: number
           updated_at?: string
         }
         Relationships: []
