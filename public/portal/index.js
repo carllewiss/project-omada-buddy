@@ -1,5 +1,5 @@
-/* 4K Smart Solutions — Omada Internal Portal frontend
- * - Vouchers: validated DIRECTLY by Omada (/portal/auth, authType=3). No Supabase call.
+/* 4K Smart Solutions — Omada EXTERNAL Portal frontend
+ * - Vouchers: confirmed with the Omada controller by the backend, which then authorizes the MAC.
  * - M-Pesa: hits Supabase Edge Functions; on success, the issued voucher is auto-submitted to Omada.
  * - After Omada confirms auth, show "Connected" screen with package + countdown, then redirect.
  */
@@ -36,9 +36,10 @@
   };
 
   const PACKAGES = [
-    { id: '2hour',  name: '2-Hour Package',  duration: '2 Hours',  price: 10,  hours: 2 },
-    { id: '24hour', name: '24-Hour Package', duration: '24 Hours', price: 30,  hours: 24 },
-    { id: '1week',  name: '1-Week Package',  duration: '7 Days',   price: 150, hours: 168 },
+    { id: '2hour',  name: '2-Hour Package',  duration: '2 Hours · 5 Mbps',  price: 10,  hours: 2 },
+    { id: '24hour', name: '24-Hour Package', duration: '24 Hours · 10 Mbps', price: 30,  hours: 24 },
+    { id: '1week',  name: '1-Week Package',  duration: '7 Days · 15 Mbps',   price: 180, hours: 168 },
+    { id: '1month', name: '1-Month Package', duration: '30 Days · 15 Mbps',  price: 720, hours: 720 },
   ];
   const labelFor = (id) => (PACKAGES.find((p) => p.id === id) || {}).name || 'Internet Access';
   let selected = PACKAGES[0];
@@ -91,36 +92,19 @@
   // Submits voucher straight to the controller's Internal Portal endpoint.
   // Returns: { ok: true } on success, { ok: false, error, code } otherwise.
   async function omadaVoucherAuth(voucher) {
-    // Mirror values to the hidden form (debug + fallback submit)
-    $('voucherCode').value = voucher;
-    $('cMac').value  = clientMac;
-    $('aMac').value  = apMac;
-    $('gMac').value  = gatewayMac;
-    $('sName').value = ssidName;
-    $('rId').value   = radioId;
-    $('vId').value   = vid;
-    $('oUrl').value  = originUrl;
-
-    const payload = {
-      authType: 3, // VOUCHER
-      voucherCode: voucher,
-      clientMac, apMac, gatewayMac, ssidName,
-      radioId: radioId ? Number(radioId) : undefined,
-      vid: vid ? Number(vid) : undefined,
-      originUrl,
-    };
-
+    // External Portal: the backend confirms the code with the Omada controller
+    // and authorizes this device's MAC for the package time + speed.
     try {
-      const r = await fetch('/portal/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+      const { data } = await call('portal-redeem-voucher', {
+        code: voucher, clientMac, apMac, ssidName, radioId: radioId ? Number(radioId) : 0,
       });
-      const res = await r.json().catch(() => ({}));
-      if (res && res.errorCode === 0) return { ok: true, result: res.result };
-      return { ok: false, error: res && (res.msg || res.errorMessage), code: res && res.errorCode };
+      if (data && data.success) {
+        if (data.packageType) connectedPackageLabel = labelFor(data.packageType);
+        return { ok: true };
+      }
+      return { ok: false, error: data && data.error };
     } catch (e) {
-      return { ok: false, error: 'Network error contacting controller' };
+      return { ok: false, error: 'Network error. Please try again.' };
     }
   }
 
@@ -326,7 +310,7 @@
       // LAYER 4 — already has an active package within last 24h
       if (data && data.alreadyActive && data.voucher) {
         $('pay-btn').disabled = false;
-        connectedPackageLabel = data.packageType === '24hour' ? '24-Hour Package' : '2-Hour Package';
+        connectedPackageLabel = labelFor(data.packageType);
         setHint(data.message || 'You already have an active package. Reconnecting…', true);
         const r = await omadaVoucherAuth(data.voucher);
         if (r.ok) {
@@ -371,6 +355,12 @@
         clearInterval(pollInterval); pollInterval = null;
         if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
         if (data.resumeToken) setResumeToken(data.resumeToken);
+        if (data.method === 'api') {
+          // Controller already let this device online for the package time.
+          hideOverlay('payment-overlay');
+          showConnected(data.packageLabel || connectedPackageLabel || selected.name);
+          return;
+        }
         armVoucherReveal(data.voucher, data.paidAt, data.revealAllowed);
         showSuccessThenAuth(data.voucher);
       } else if (data.status === 'failed') {
@@ -406,7 +396,7 @@
         if (resumeToken && data && data.active === false) clearResumeToken();
         return;
       }
-      connectedPackageLabel = data.packageType === '24hour' ? '24-Hour Package' : '2-Hour Package';
+      connectedPackageLabel = labelFor(data.packageType);
       armVoucherReveal(data.voucher, data.paidAt, data.revealAllowed);
       const r = await omadaVoucherAuth(data.voucher);
       if (r.ok) showConnected(connectedPackageLabel, r.result);
