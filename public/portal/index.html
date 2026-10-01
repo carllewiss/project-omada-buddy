@@ -11,7 +11,7 @@
 <body class="portal">
 
   <!-- Hidden Omada native form. The portal auto-fills voucherCode + clientMac
-       and submits to /portal/auth (Internal Portal endpoint). -->
+       and the backend authorizes the device on the Omada controller (External Portal). -->
   <form id="omada-form" style="display:none">
     <input id="voucherCode" name="voucherCode" type="text" />
     <input id="cMac" name="clientMac" type="text" />
