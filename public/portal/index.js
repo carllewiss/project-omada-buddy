@@ -36,10 +36,10 @@
   };
 
   const PACKAGES = [
-    { id: '2hour',  name: '2-Hour Package',  duration: '2 Hours · 5 Mbps',  price: 10,  hours: 2 },
-    { id: '24hour', name: '24-Hour Package', duration: '24 Hours · 10 Mbps', price: 30,  hours: 24 },
-    { id: '1week',  name: '1-Week Package',  duration: '7 Days · 15 Mbps',   price: 180, hours: 168 },
-    { id: '1month', name: '1-Month Package', duration: '30 Days · 15 Mbps',  price: 720, hours: 720 },
+    { id: '2hour',  name: '2-Hour Package',  duration: '2 Hours',  price: 10,  hours: 2 },
+    { id: '24hour', name: '24-Hour Package', duration: '24 Hours', price: 30,  hours: 24 },
+    { id: '1week',  name: '1-Week Package',  duration: '7 Days',   price: 180, hours: 168 },
+    { id: '1month', name: '1-Month Package', duration: '30 Days',  price: 720, hours: 720 },
   ];
   const labelFor = (id) => (PACKAGES.find((p) => p.id === id) || {}).name || 'Internet Access';
   let selected = PACKAGES[0];

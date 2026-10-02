@@ -15,6 +15,13 @@ const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
 const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
+const OMADA_HOST = OMADA_URL ? new URL(OMADA_URL).hostname : '';
+const OMADA_CA_CERT = Deno.env.get('OMADA_CA_CERT') ?? '';
+const OMADA_HTTP_CLIENT = Deno.createHttpClient({
+  // Trust the self-signed certificate only for this configured controller.
+  caCerts: OMADA_CA_CERT ? [OMADA_CA_CERT] : [],
+  unsafelyIgnoreCertificateErrors: OMADA_HOST ? [OMADA_HOST] : [],
+});
 const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
 const SITE_ID = Deno.env.get('OMADA_SITE_ID') ?? '';
 const CID = Deno.env.get('OMADA_CLIENT_ID') ?? '';
@@ -29,7 +36,9 @@ const normMac = (m: string) => (m || '').trim().toUpperCase().replace(/:/g, '-')
 async function fetchT(url: string, init: RequestInit = {}, ms = 8000) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms);
-  try { return await fetch(url, { ...init, signal: ctl.signal }); } finally { clearTimeout(t); }
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal, client: OMADA_HTTP_CLIENT } as RequestInit & { client: Deno.HttpClient });
+  } finally { clearTimeout(t); }
 }
 const siteBase = () => `${OMADA_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}`;
 async function accessToken() {
