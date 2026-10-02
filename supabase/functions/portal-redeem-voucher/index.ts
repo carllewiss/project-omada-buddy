@@ -16,8 +16,10 @@ const json = (b: unknown, status = 200) =>
 
 const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
 const OMADA_HOST = OMADA_URL ? new URL(OMADA_URL).hostname : '';
+const OMADA_CA_CERT = Deno.env.get('OMADA_CA_CERT') ?? '';
 const OMADA_HTTP_CLIENT = Deno.createHttpClient({
   // Trust the self-signed certificate only for this configured controller.
+  caCerts: OMADA_CA_CERT ? [OMADA_CA_CERT] : [],
   unsafelyIgnoreCertificateErrors: OMADA_HOST ? [OMADA_HOST] : [],
 });
 const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
