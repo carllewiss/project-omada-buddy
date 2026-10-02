@@ -17,13 +17,6 @@ const corsHeaders = {
 };
 
 const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
-const OMADA_HOST = OMADA_URL ? new URL(OMADA_URL).hostname : '';
-const OMADA_CA_CERT = Deno.env.get('OMADA_CA_CERT') ?? '';
-const OMADA_HTTP_CLIENT = Deno.createHttpClient({
-  // Trust the self-signed certificate only for this configured controller.
-  caCerts: OMADA_CA_CERT ? [OMADA_CA_CERT] : [],
-  unsafelyIgnoreCertificateErrors: OMADA_HOST ? [OMADA_HOST] : [],
-});
 const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
 const SITE_ID = Deno.env.get('OMADA_SITE_ID') ?? '';
 const CLIENT_ID = Deno.env.get('OMADA_CLIENT_ID') ?? '';
@@ -37,8 +30,58 @@ const json = (b: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
-const omadaFetch = (url: string, init: RequestInit = {}) =>
-  fetch(url, { ...init, client: OMADA_HTTP_CLIENT } as RequestInit & { client: Deno.HttpClient });
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function decodeChunked(body: Uint8Array): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+  while (offset < body.length) {
+    const lineEnd = body.indexOf(13, offset);
+    if (lineEnd < 0 || body[lineEnd + 1] !== 10) break;
+    const size = Number.parseInt(decoder.decode(body.slice(offset, lineEnd)).split(';')[0], 16);
+    if (!Number.isFinite(size) || size === 0) break;
+    const start = lineEnd + 2;
+    chunks.push(body.slice(start, start + size));
+    offset = start + size + 2;
+  }
+  const output = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let position = 0;
+  for (const chunk of chunks) { output.set(chunk, position); position += chunk.length; }
+  return output;
+}
+
+async function omadaFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const target = new URL(url);
+  const configured = new URL(OMADA_URL);
+  if (target.protocol !== 'https:' || target.hostname !== configured.hostname) throw new Error('Refusing non-controller request');
+  const encodedCert = Deno.env.get('OMADA_CA_CERT_B64') ?? '';
+  if (!encodedCert) throw new Error('Controller certificate is not configured');
+  const conn = await Deno.connectTls({
+    hostname: target.hostname, port: Number(target.port || 443), caCerts: [atob(encodedCert)],
+    unsafelyDisableHostnameVerification: true,
+  });
+  try {
+    const headers = new Headers(init.headers);
+    const body = typeof init.body === 'string' ? init.body : '';
+    headers.set('Host', target.host); headers.set('Connection', 'close'); headers.set('Accept-Encoding', 'identity');
+    if (body) headers.set('Content-Length', String(encoder.encode(body).length));
+    const head = `${init.method ?? 'GET'} ${target.pathname}${target.search} HTTP/1.1\r\n${Array.from(headers.entries()).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\n\r\n`;
+    await conn.write(encoder.encode(head + body));
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of conn.readable) chunks.push(chunk);
+    const raw = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+    let cursor = 0; for (const chunk of chunks) { raw.set(chunk, cursor); cursor += chunk.length; }
+    let boundary = -1;
+    for (let i = 0; i < raw.length - 3; i++) if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) { boundary = i; break; }
+    if (boundary < 0) throw new Error('Invalid controller response');
+    const lines = decoder.decode(raw.slice(0, boundary)).split('\r\n');
+    const responseHeaders = new Headers();
+    for (const line of lines.slice(1)) { const split = line.indexOf(':'); if (split > 0) responseHeaders.append(line.slice(0, split).trim(), line.slice(split + 1).trim()); }
+    const responseBody = responseHeaders.get('transfer-encoding')?.toLowerCase() === 'chunked' ? decodeChunked(raw.slice(boundary + 4)) : raw.slice(boundary + 4);
+    return new Response(responseBody, { status: Number(lines[0]?.split(' ')[1] ?? 500), headers: responseHeaders });
+  } finally { conn.close(); }
+}
 
 // ---------------------------------------------------------------- Open API --
 async function accessToken(): Promise<string> {
