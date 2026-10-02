@@ -17,6 +17,11 @@ const corsHeaders = {
 };
 
 const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
+const OMADA_HOST = OMADA_URL ? new URL(OMADA_URL).hostname : '';
+const OMADA_HTTP_CLIENT = Deno.createHttpClient({
+  // Trust the self-signed certificate only for this configured controller.
+  unsafelyIgnoreCertificateErrors: OMADA_HOST ? [OMADA_HOST] : [],
+});
 const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
 const SITE_ID = Deno.env.get('OMADA_SITE_ID') ?? '';
 const CLIENT_ID = Deno.env.get('OMADA_CLIENT_ID') ?? '';
@@ -30,9 +35,12 @@ const json = (b: unknown, status = 200) =>
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 
+const omadaFetch = (url: string, init: RequestInit = {}) =>
+  fetch(url, { ...init, client: OMADA_HTTP_CLIENT } as RequestInit & { client: Deno.HttpClient });
+
 // ---------------------------------------------------------------- Open API --
 async function accessToken(): Promise<string> {
-  const res = await fetch(`${OMADA_URL}/openapi/authorize/token?grant_type=client_credentials`, {
+  const res = await omadaFetch(`${OMADA_URL}/openapi/authorize/token?grant_type=client_credentials`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ omadacId: OMADAC_ID, client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
@@ -54,7 +62,7 @@ async function clientState(mac: string) {
   let authorized = false;
   let authInfo: unknown = null;
   try {
-    const r = await fetch(
+    const r = await omadaFetch(
       `${OMADA_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/clients/auth?mac=${encodeURIComponent(target)}`,
       { headers },
     );
@@ -69,7 +77,7 @@ async function clientState(mac: string) {
   let online = false;
   let client: Record<string, unknown> | null = null;
   for (let page = 1; page <= 5 && !client; page++) {
-    const r = await fetch(
+    const r = await omadaFetch(
       `${OMADA_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/clients?page=${page}&pageSize=100`,
       { headers },
     );
@@ -92,7 +100,7 @@ async function clientState(mac: string) {
 // (Omada > Hotspot Manager > Operator).
 async function operatorSession(): Promise<{ csrf: string; cookie: string }> {
   if (!OPERATOR_USER || !OPERATOR_PASS) throw new Error('operator_not_configured');
-  const res = await fetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/login`, {
+  const res = await omadaFetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: OPERATOR_USER, password: OPERATOR_PASS }),
@@ -123,7 +131,7 @@ async function authorizeMac(opts: {
       time: Math.round(opts.seconds * 1000), // milliseconds of access
       authType: 4,
     };
-    const res = await fetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/extPortal/auth`, {
+    const res = await omadaFetch(`${OMADA_URL}/${OMADAC_ID}/api/v2/hotspot/extPortal/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Csrf-Token': csrf, Cookie: cookie },
       body: JSON.stringify(body),
@@ -143,7 +151,7 @@ async function createVoucher(durationHours: number, label: string, priceKes: num
   const base = `${OMADA_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}/hotspot/voucher-groups`;
   const headers = { 'Content-Type': 'application/json', Authorization: `AccessToken=${token}` };
 
-  const createRes = await fetch(base, {
+  const createRes = await omadaFetch(base, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -171,7 +179,7 @@ async function createVoucher(durationHours: number, label: string, priceKes: num
   if (created?.errorCode !== 0) throw new Error(created?.msg || 'Voucher creation failed');
   const groupId = created.result.id as string;
 
-  const listRes = await fetch(`${base}/${groupId}?page=1&pageSize=1`, { headers });
+  const listRes = await omadaFetch(`${base}/${groupId}?page=1&pageSize=1`, { headers });
   const list = await listRes.json();
   const code = list?.result?.data?.[0]?.code as string | undefined;
   if (!code) throw new Error('Voucher created but no code returned');

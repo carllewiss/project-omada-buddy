@@ -19,6 +19,12 @@ const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
 // ============================ Omada helpers ============================
 const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
+const OMADA_HOST = OMADA_URL ? new URL(OMADA_URL).hostname : '';
+const OMADA_HTTP_CLIENT = Deno.createHttpClient({
+  // The local controller presents its own certificate. Scope the exception to
+  // that controller hostname so certificate checks remain enabled elsewhere.
+  unsafelyIgnoreCertificateErrors: OMADA_HOST ? [OMADA_HOST] : [],
+});
 const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
 const SITE_ID = Deno.env.get('OMADA_SITE_ID') ?? '';
 const OMADA_CLIENT_ID = Deno.env.get('OMADA_CLIENT_ID') ?? '';
@@ -49,7 +55,9 @@ const normMac = (m: string) => (m || '').trim().toUpperCase().replace(/:/g, '-')
 async function fetchT(url: string, init: RequestInit = {}, ms = 8000) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), ms);
-  try { return await fetch(url, { ...init, signal: ctl.signal }); } finally { clearTimeout(t); }
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal, client: OMADA_HTTP_CLIENT } as RequestInit & { client: Deno.HttpClient });
+  } finally { clearTimeout(t); }
 }
 async function accessToken(): Promise<string> {
   const res = await fetchT(`${OMADA_URL}/openapi/authorize/token?grant_type=client_credentials`, {
