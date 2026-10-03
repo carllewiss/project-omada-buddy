@@ -100,7 +100,13 @@ async function omadaFetch(url: string, init: RequestInit = {}): Promise<Response
     const head = `${init.method ?? 'GET'} ${target.pathname}${target.search} HTTP/1.1\r\n${Array.from(headers.entries()).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\n\r\n`;
     await conn.write(encoder.encode(head + body));
     const chunks: Uint8Array[] = [];
-    for await (const chunk of conn.readable) chunks.push(chunk);
+    const buf = new Uint8Array(16384);
+    while (true) {
+      let n: number | null = null;
+      try { n = await conn.read(buf); } catch (e) { if (chunks.length) break; throw e; }
+      if (n === null) break;
+      chunks.push(buf.slice(0, n));
+    }
     const raw = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
     let cursor = 0; for (const chunk of chunks) { raw.set(chunk, cursor); cursor += chunk.length; }
     let boundary = -1;
