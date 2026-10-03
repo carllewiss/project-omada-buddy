@@ -16,12 +16,6 @@ const json = (b: unknown, status = 200) =>
 
 const OMADA_URL = (Deno.env.get('OMADA_URL') ?? '').replace(/\/+$/, '');
 const OMADA_HOST = OMADA_URL ? new URL(OMADA_URL).hostname : '';
-const OMADA_CA_CERT = Deno.env.get('OMADA_CA_CERT') ?? '';
-const OMADA_HTTP_CLIENT = Deno.createHttpClient({
-  // Trust the self-signed certificate only for this configured controller.
-  caCerts: OMADA_CA_CERT ? [OMADA_CA_CERT] : [],
-  unsafelyIgnoreCertificateErrors: OMADA_HOST ? [OMADA_HOST] : [],
-});
 const OMADAC_ID = Deno.env.get('OMADA_OMADAC_ID') ?? '';
 const SITE_ID = Deno.env.get('OMADA_SITE_ID') ?? '';
 const CID = Deno.env.get('OMADA_CLIENT_ID') ?? '';
@@ -33,11 +27,98 @@ const SPEED_BY_HOURS = (h: number) => (h <= 2 ? 5 : h <= 24 ? 10 : 15);
 const PKG_BY_HOURS = (h: number) => (h <= 2 ? '2hour' : h <= 24 ? '24hour' : h <= 168 ? '1week' : '1month');
 
 const normMac = (m: string) => (m || '').trim().toUpperCase().replace(/:/g, '-');
-async function fetchT(url: string, init: RequestInit = {}, ms = 8000) {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), ms);
+// Public self-signed certificate of the configured controller (pinned; not a secret).
+const CONTROLLER_CERT = `-----BEGIN CERTIFICATE-----
+MIIFJDCCAwygAwIBAgIRAN4hsLJDpGStagHYkxENoeEwDQYJKoZIhvcNAQELBQAw
+ODESMBAGA1UEAwwJbG9jYWxob3N0MRAwDgYDVQQKDAdUUC1MaW5rMRAwDgYDVQQL
+DAdUUC1MaW5rMB4XDTI1MTEwODE0MTQxM1oXDTI4MDIxMTE0MTQxM1owODESMBAG
+A1UEAwwJbG9jYWxob3N0MRAwDgYDVQQKDAdUUC1MaW5rMRAwDgYDVQQLDAdUUC1M
+aW5rMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAr8z60pdTK+tgiP6g
+3PZfyyx9HaBt19H/g+gjDeAkgOfyb7ZBm6Xk1+kZzIiuIwRTdvxIeuEoeL1SHwuJ
+Tpb1vFOXKnFy2ZEAF6n82619odcigndeY7bXAR1Pfn5gOV87hyOi1jOg04FwFM8I
+VTmTTXBPJwgR2xkIyFZiPFVmY5a6X8swVfqX6/nkH50Iy+GInIWgC8aUi6TS05RA
+nC2upLJz464AgITwa9w0OCIkyNhj12egBe7BisnXsQobtVwI5T9ZimHQIAafPTM4
+ecTQNm0tFs6At4LSOkyWcV48Vc279dNCDvHV2iRmM8oIbb7gTbVJVEeP6FFRa3Gj
+H+fDXKrR1EmQqx92LqPKv6Z6xzyOj5uvvDIRL3WSQ12+ElunxvbTapXrTPEKAn45
+BAp8xPH+FfsT5VG4dCq1KYVXJ8C4dhgJa+3HYr2B5U2S1xndQ1YwXczyOO80Ouw0
+Zkb3Z/L8ZNKEhS2WTcxU/p64cVuu32McKxPbFdV/nJjEw6EA+LUBpLZvUnkcCnXp
+r5OvLDmzovc2hGkmOWa+Dsazy5UR4ixp6qxMgyA4Xqi+5T6J19Q6huNQZZpRNFZ/
+AxAfUzINUgRgBQupddba1j7tqTnxbT6JuIN/59ViGzxyWEWbIsv6TD2zf9hprifn
+UIwbrcxJAxx9OhM2KCQIcmIlOC0CAwEAAaMpMCcwEwYDVR0lBAwwCgYIKwYBBQUH
+AwEwEAYDVR0RBAkwB4IFT21hZGEwDQYJKoZIhvcNAQELBQADggIBAH/aDK+IWIGR
+f9bxbU3jbh29of1D2anxldVeUlVPEBrGFF8dPmTnfJqIAawxY2LAyBKRcPlqi3yU
+Afx3Y11EYZxVDQl4DPb0edxL3Q5LrkDnJPRgKWRRDaps1ERPBitq0pZD13omT75S
+76NSnTyaT7vWYk2ZdLa35izAylskOYDbM/HPEY6d3yDKGC299yRQFPKW1ic7yGYT
+RhASd/HEPW+RoYp6KLUkh/HXr3vL3aq1aJOBgQZju/LDQDpfy6F7qqACLWUApJCl
+U0H14+h0qvV5EBYluCi8LsIbC6hGpGGr3a228D6ghi9YHf1K+3I9gMlMEsknN20O
+lUqAKW634uRkAWBNnr6GvW1BC3rGPEu3FFSdr/p/Y2lwVMwv64YO70F/mOBb1Ip9
+IHLTnAECcodjrF+dnj12oiiZOQgJIUUUTto2cPh1p/aqZ21IuwgC6iqsDB+AUEKJ
+goaAH++vp6IwyYKeh5f8U846Wmh0ygYcjUmG3wOlCwEKecWZvZCRz4hkBRvkztiU
+Q0jex7D6t5Wlpqdt8GFwhJB3g/97P8iCGlYsNEYoOdFdPyQtMQDnwOhD3y9oktwr
+n0VxOSC5lb9117fLjcfxtDpdKVxMyTrHTwZn54ntCsGbJfSq2evlQrGIQyqvukbl
+HCnM5FFcqfkA/b704+5nuuFCXxy3OBi+
+-----END CERTIFICATE-----
+`;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+function decodeChunked(body: Uint8Array): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+  while (offset < body.length) {
+    const lineEnd = body.indexOf(13, offset);
+    if (lineEnd < 0 || body[lineEnd + 1] !== 10) break;
+    const size = Number.parseInt(decoder.decode(body.slice(offset, lineEnd)).split(';')[0], 16);
+    if (!Number.isFinite(size) || size === 0) break;
+    const start = lineEnd + 2;
+    chunks.push(body.slice(start, start + size));
+    offset = start + size + 2;
+  }
+  const output = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+  let position = 0;
+  for (const chunk of chunks) { output.set(chunk, position); position += chunk.length; }
+  return output;
+}
+async function omadaFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const target = new URL(url);
+  if (target.protocol !== 'https:' || target.hostname !== OMADA_HOST) throw new Error('Refusing non-controller request');
+  // Controller cert is self-signed with SAN "Omada": connect to the IP over TCP,
+  // then verify TLS against the pinned cert using its own certificate name.
+  const tcp = await Deno.connect({ hostname: target.hostname, port: Number(target.port || 443) });
+  const conn = await Deno.startTls(tcp, { hostname: 'Omada', caCerts: [CONTROLLER_CERT] });
   try {
-    return await fetch(url, { ...init, signal: ctl.signal, client: OMADA_HTTP_CLIENT } as RequestInit & { client: Deno.HttpClient });
+    const headers = new Headers(init.headers);
+    const body = typeof init.body === 'string' ? init.body : '';
+    headers.set('Host', target.host); headers.set('Connection', 'close'); headers.set('Accept-Encoding', 'identity');
+    if (body) headers.set('Content-Length', String(encoder.encode(body).length));
+    const head = `${init.method ?? 'GET'} ${target.pathname}${target.search} HTTP/1.1\r\n${Array.from(headers.entries()).map(([k, v]) => `${k}: ${v}`).join('\r\n')}\r\n\r\n`;
+    await conn.write(encoder.encode(head + body));
+    const chunks: Uint8Array[] = [];
+    const buf = new Uint8Array(16384);
+    while (true) {
+      let n: number | null = null;
+      try { n = await conn.read(buf); } catch (e) { if (chunks.length) break; throw e; }
+      if (n === null) break;
+      chunks.push(buf.slice(0, n));
+    }
+    const raw = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+    let cursor = 0; for (const chunk of chunks) { raw.set(chunk, cursor); cursor += chunk.length; }
+    let boundary = -1;
+    for (let i = 0; i < raw.length - 3; i++) if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) { boundary = i; break; }
+    if (boundary < 0) throw new Error('Invalid controller response');
+    const lines = decoder.decode(raw.slice(0, boundary)).split('\r\n');
+    const responseHeaders = new Headers();
+    for (const line of lines.slice(1)) { const split = line.indexOf(':'); if (split > 0) responseHeaders.append(line.slice(0, split).trim(), line.slice(split + 1).trim()); }
+    const responseBody = responseHeaders.get('transfer-encoding')?.toLowerCase() === 'chunked' ? decodeChunked(raw.slice(boundary + 4)) : raw.slice(boundary + 4);
+    return new Response(responseBody, { status: Number(lines[0]?.split(' ')[1] ?? 500), headers: responseHeaders });
+  } finally { try { conn.close(); } catch { /* already closed */ } }
+}
+async function fetchT(url: string, init: RequestInit = {}, ms = 8000) {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      omadaFetch(url, init),
+      new Promise<Response>((_, rej) => { t = setTimeout(() => rej(new Error('controller timeout')), ms); }),
+    ]);
   } finally { clearTimeout(t); }
 }
 const siteBase = () => `${OMADA_URL}/openapi/v1/${OMADAC_ID}/sites/${SITE_ID}`;
