@@ -111,7 +111,7 @@ async function omadaFetch(url: string, init: RequestInit = {}): Promise<Response
     for (const line of lines.slice(1)) { const split = line.indexOf(':'); if (split > 0) responseHeaders.append(line.slice(0, split).trim(), line.slice(split + 1).trim()); }
     const responseBody = responseHeaders.get('transfer-encoding')?.toLowerCase() === 'chunked' ? decodeChunked(raw.slice(boundary + 4)) : raw.slice(boundary + 4);
     return new Response(responseBody, { status: Number(lines[0]?.split(' ')[1] ?? 500), headers: responseHeaders });
-  } finally { conn.close(); }
+  } finally { try { conn.close(); } catch { /* already closed by stream */ } }
 }
 
 // ---------------------------------------------------------------- Open API --
