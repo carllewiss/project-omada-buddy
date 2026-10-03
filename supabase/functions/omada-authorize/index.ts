@@ -57,10 +57,10 @@ async function omadaFetch(url: string, init: RequestInit = {}): Promise<Response
   if (target.protocol !== 'https:' || target.hostname !== configured.hostname) throw new Error('Refusing non-controller request');
   const encodedCert = Deno.env.get('OMADA_CA_CERT_B64') ?? '';
   if (!encodedCert) throw new Error('Controller certificate is not configured');
-  const conn = await Deno.connectTls({
-    hostname: target.hostname, port: Number(target.port || 443), caCerts: [atob(encodedCert)],
-    unsafelyDisableHostnameVerification: true,
-  });
+  // Controller cert is self-signed with SAN "Omada": connect to the IP over TCP,
+  // then verify TLS against the pinned cert using its own certificate name.
+  const tcp = await Deno.connect({ hostname: target.hostname, port: Number(target.port || 443) });
+  const conn = await Deno.startTls(tcp, { hostname: 'Omada', caCerts: [atob(encodedCert)] });
   try {
     const headers = new Headers(init.headers);
     const body = typeof init.body === 'string' ? init.body : '';
