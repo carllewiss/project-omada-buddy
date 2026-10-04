@@ -302,7 +302,18 @@ Deno.serve(async (req) => {
 
     // ---------------- PRIMARY: authorize this MAC on the controller ----------------
     // Runs even when the payment callback already reserved a fallback voucher.
-    if (clientMac) {
+    // Skipped once we've already fallen back to a voucher (keeps repeat polls fast).
+    if (clientMac && auth && auth.authorization_status !== 'voucher') {
+      // Lock: only one poll at a time may authorize (prevents double approvals).
+      const nowIso = new Date().toISOString();
+      const staleIso = new Date(Date.now() - 30_000).toISOString();
+      const { data: lock } = await supabase.from('client_authorizations')
+        .update({ authorization_status: 'processing', updated_at: nowIso })
+        .eq('checkout_request_id', checkoutRequestId)
+        .or(`authorization_status.eq.no,and(authorization_status.eq.processing,updated_at.lt.${staleIso})`)
+        .select('id');
+      if (!lock || lock.length === 0) return json({ status: 'pending' });
+
       const seconds = pkg.hours * 3600;
       const granted = await authorizeMac({
         clientMac, apMac: apMac || tx.ap_mac || '', ssidName: ssidName || tx.ssid || '',
@@ -353,6 +364,9 @@ Deno.serve(async (req) => {
         outcome: 'failed', details: { method: 'ext_portal_auth', error: granted.error, unreachable: !!granted.unreachable },
       });
       console.warn('[omada] direct MAC auth failed, falling back to voucher:', granted.error);
+      await supabase.from('client_authorizations')
+        .update({ authorization_status: 'voucher', updated_at: new Date().toISOString() })
+        .eq('checkout_request_id', checkoutRequestId);
     }
 
     // ---------------- FALLBACK: voucher ----------------
