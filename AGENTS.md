@@ -10,3 +10,4 @@
 <!-- LOVABLE:END -->
 
 - Route every server-side Omada HTTPS request through a controller-scoped Deno HTTP client that accepts only the configured controller's self-signed certificate, because the controller is addressed by public IP with a locally issued certificate.
+- Omada controller calls in edge functions use a raw TLS connection pinned to the controller's public self-signed cert (verified as host name "Omada"), because the hosted runtime ignores per-host certificate exceptions.
