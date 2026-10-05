@@ -204,17 +204,19 @@ Deno.serve(async (req) => {
     const log = (row: Record<string, unknown>) => sb.from('session_events').insert({ event_type: 'voucher_redeem', voucher_code: code, client_mac: clientMac, ...row }).then(() => {}, () => {});
 
     // 1. Validate on the controller (fallback: local pool).
+    const { data: local } = await sb.from('vouchers').select('*').eq('code', code).maybeSingle();
+    // If we already recorded this voucher's start time, our own clock is the source of truth
+    // for remaining time (controller "status 2" also covers used/in-use codes, not only expired).
+    const localStillActive = !!(local?.used_at && (Date.now() - new Date(local.used_at).getTime()) < Number(local.duration_hours || 2) * 3600_000);
     let minutes = 0, source = 'omada';
     let controllerOk = true;
     try {
       const v = await findOnController(code);
       if (v) {
-        if (v.expired) { log({ outcome: 'expired' }); return json({ success: false, error: 'This voucher has expired.' }); }
-        minutes = v.minutes;
+        if (v.expired && !localStillActive) { log({ outcome: 'expired' }); return json({ success: false, error: 'This voucher has expired.' }); }
+        minutes = localStillActive ? Number(local!.duration_hours) * 60 : v.minutes;
       }
     } catch (e) { controllerOk = false; console.warn('[redeem] controller lookup failed', e); }
-
-    const { data: local } = await sb.from('vouchers').select('*').eq('code', code).maybeSingle();
     if (!minutes) {
       if (!local) { log({ outcome: 'invalid', details: { controllerOk } }); return json({ success: false, error: 'Invalid voucher code.' }); }
       minutes = Number(local.duration_hours || 2) * 60; source = 'local';
