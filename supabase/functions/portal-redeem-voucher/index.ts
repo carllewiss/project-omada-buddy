@@ -170,7 +170,7 @@ async function authorizeMac(o: { clientMac: string; apMac: string; ssidName: str
     body: JSON.stringify({
       clientMac: normMac(o.clientMac), apMac: normMac(o.apMac), ssidName: o.ssidName,
       radioId: Number.isFinite(o.radioId) ? o.radioId : 0, site: SITE_ID,
-      time: Math.round(o.seconds) * 1_000_000, authType: 4,
+      time: Math.round(o.seconds) * 1000, authType: 4, // milliseconds
     }),
   });
   const d = await r.json().catch(() => ({}));
