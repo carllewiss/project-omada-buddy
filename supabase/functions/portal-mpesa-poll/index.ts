@@ -326,7 +326,7 @@ Deno.serve(async (req) => {
         // Return the unsubmitted fallback voucher (if any) to the pool.
         if (tx.voucher_code && !tx.voucher_code.startsWith('MAC-')) {
           await supabase.from('vouchers')
-            .update({ status: 'unused', used_at: null, used_by_mac: null, transaction_id: null })
+            .update({ status: 'unused', is_used: false, used_at: null, used_by_mac: null, transaction_id: null })
             .eq('code', tx.voucher_code);
         }
 
